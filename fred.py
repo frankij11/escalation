@@ -199,7 +199,7 @@ class Escalation:
         
         return r.json()
     
-    @lru_cache
+    @lru_cache(maxsize=50)
     def request_df(self,url,records_name,**payload):
         j = self.request_json(url, **payload)
         df = pd.DataFrame.from_records(j[records_name])
