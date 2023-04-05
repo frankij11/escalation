@@ -27,7 +27,7 @@ command = [
     "--allow-websocket-origin",
     "localhost",
     "--allow-websocket-origin",
-    "*render*",
+    "*escalation.onrender.com",
     "--allow-websocket-origin",
     "*.huggingface.co",
     # "--log-level",
