@@ -1,0 +1,6 @@
+pandas
+panel
+requests
+urllib3
+plotly
+hvplot
