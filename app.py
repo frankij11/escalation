@@ -12,7 +12,7 @@ APPS_TO_SERVE = "escalation.py"
 #INDEX_PAGE = "index"
 
 # NORMALLY NO NEED TO CHANGE THE BELOW
-PORT =10000 #os.environ.get("PORT", "7860")
+PORT ="10000"#os.environ.get("PORT", "7860")
 ADDRESS = "0.0.0.0"
 command = [
     "panel",
@@ -26,8 +26,12 @@ command = [
     ADDRESS,
     "--allow-websocket-origin",
     "localhost",
+
     "--allow-websocket-origin",
-    "*escalation.onrender.com",
+    "*onrender.com",
+
+    "--allow-websocket-origin",
+    "*escalation.onrender.com:443",
     "--allow-websocket-origin",
     "*.huggingface.co",
     # "--log-level",
