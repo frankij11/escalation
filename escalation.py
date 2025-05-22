@@ -66,82 +66,166 @@ def _rename_numeric_cols_to_str(df: pd.DataFrame, num_cols: int = 10) -> pd.Data
 
 # Initial series data loaded on application start
 # Fetches data for a predefined set of series to populate the view initially.
+# Updated to pass forecast_options (defaulting to median)
 try:
     initial_series_data = esc.make_index_from_search(
-        ["Gross Domestic Product Deflator", "CPI", "PPI"],
-        limit=1
+        search_term=["Gross Domestic Product Deflator", "CPI", "PPI"],
+        limit=1,
+        forecast_options={'method': 'median'} # Default for initial load
     ).drop_duplicates()
 except Exception as e:
-    logger.error(f"Failed to load initial series data: {e}")
+    logger.error(f"Failed to load initial series data: {e}", exc_info=True)
     initial_series_data = pd.DataFrame()  # Start with empty on error
 
 # Rename columns for display in Tabulator and Perspective
 processed_initial_series = _rename_numeric_cols_to_str(initial_series_data)
 
-df_widget = pn.widgets.Tabulator(
-    processed_initial_series, pagination='remote', page_size=10)
-indices = pn.pane.Perspective(
+df_widget = Tabulator(
+    processed_initial_series, pagination='remote', page_size=10) # Used specific import
+indices = Perspective( # Used specific import
     processed_initial_series, toggle_config=False, theme="material-dark")
 
 # Widgets for user inputs
 series_options: List[str] = []
-if 'id' in processed_initial_series.columns:  # Check if 'id' column exists
+if 'id' in processed_initial_series.columns:
     series_options = processed_initial_series.id.unique().tolist()
-elif not processed_initial_series.empty:  # Log if 'id' is missing but df is not empty
+elif not processed_initial_series.empty:
     logger.warning(
         "'id' column not found in initial_series_data. MultiChoice for series_ids will be empty.")
 
-series_ids_widget = pn.widgets.MultiChoice(
-    name="Select Series for Index", options=series_options)  # Renamed for clarity
-base_year_widget = pn.widgets.Select(
-    name="Base Year", value=2023, options=list(range(1970, 2061)))  # Renamed
+series_ids_widget = MultiChoice( # Used specific import
+    name="Select Series for Index", options=series_options)
+base_year_widget = Select( # Used specific import
+    name="Base Year", value=2023, options=list(range(1970, 2061)))
 
-# Define initial outlay DataFrame structure
-# Columns are 'sum' followed by numeric strings '0' through '9'
 outlay_columns = ['sum'] + [str(i) for i in range(10)]
-# Ensure data matches column structure
 initial_outlay_data = [[1, 0.75, 0.25] + [0.0] * 8]
-outlays_widget = pn.widgets.Tabulator(  # Renamed
+outlays_widget = Tabulator( # Used specific import
     name="Outlay Profile (Yearly %)",
     value=pd.DataFrame(columns=outlay_columns, data=initial_outlay_data),
-    layout='fit_data',  # Ensure table fits data
-    disabled=True  # Initially disabled, enable if editable outlays are desired
+    layout='fit_data',
+    disabled=True # Kept disabled as per original; can be enabled if editing is desired
 )
 
-fys_slider = pn.widgets.IntRangeSlider(
-    name="Fiscal Year Range for Plot", start=1970, end=2060, value=(2000, 2025))  # Renamed
+fys_slider = IntRangeSlider( # Used specific import
+    name="Fiscal Year Range for Plot", start=1970, end=2060, value=(2000, 2025))
 
-search_input = pn.widgets.TextInput(
-    name="Search FRED Series (e.g., 'GDPDEF', 'CPIAUCSL')")  # Renamed
-search_limit_input = pn.widgets.IntInput(
-    name="Limit Search Results", start=1, value=1, end=5)  # Renamed
-search_button = pn.widgets.Button(
-    name="Search and Add Series to Table")  # Renamed
+search_input = TextInput( # Used specific import
+    name="Search FRED Series (e.g., 'GDPDEF', 'CPIAUCSL')")
+search_limit_input = IntInput( # Used specific import
+    name="Limit Search Results", start=1, value=1, end=5)
+search_button = Button( # Used specific import
+    name="Search and Add Series to Table")
+
+
+# --- Forecasting Widgets ---
+forecast_method_select = Select( # Used specific import
+    name="Select Forecast Method",
+    options=['median', 'mean', 'arima', 'exponential_smoothing', 'chained'],
+    value='median'
+)
+
+# ARIMA options
+arima_p_input = IntInput(name='ARIMA P (AutoRegressive order)', value=1, start=0, end=10, width=150)
+arima_d_input = IntInput(name='ARIMA D (Differencing order)', value=1, start=0, end=5, width=150)
+arima_q_input = IntInput(name='ARIMA Q (Moving Average order)', value=0, start=0, end=10, width=150)
+
+# Exponential Smoothing options
+es_trend_select = Select(name='Trend Component', options=['add', 'mul', None], value='add', width=150)
+es_seasonal_select = Select(name='Seasonal Component', options=['add', 'mul', None], value=None, width=150)
+es_seasonal_periods_input = IntInput(name='Seasonal Periods', value=4, start=0, width=150) # e.g., 4 for quarterly
+
+# Chained series options
+chained_series_id_input = TextInput(name='Chained Series ID (e.g., GDPPI)', placeholder='Enter FRED Series ID', width=300)
+# chained_type_select is simplified to 'rate' in fred.py, so no widget for it now.
+
+# Dynamic UI container for forecast options
+forecast_options_ui = Column(sizing_mode='stretch_width') # Used specific import
 
 
 # --- Callback Functions ---
+
+def update_forecast_options_ui(event: Any) -> None: # event type can be param.parameterized.Event if param is imported
+    """
+    Updates the visibility of forecast-specific input widgets based on the
+    selected forecast method in `forecast_method_select`.
+    """
+    selected_method = forecast_method_select.value
+    forecast_options_ui.clear() # Clear previous options
+
+    if selected_method == 'arima':
+        forecast_options_ui.extend([
+            pn.Row(arima_p_input, arima_d_input, arima_q_input) # Using pn.Row for better layout
+        ])
+    elif selected_method == 'exponential_smoothing':
+        forecast_options_ui.extend([
+            pn.Row(es_trend_select, es_seasonal_select),
+            es_seasonal_periods_input
+        ])
+    elif selected_method == 'chained':
+        forecast_options_ui.append(chained_series_id_input)
+    else: # 'median', 'mean', or others that don't require specific UI options
+        forecast_options_ui.append(
+            Markdown("No specific options required for this method.") # Used specific import
+        )
+
+# Link callback to forecast_method_select value changes
+forecast_method_select.param.watch(update_forecast_options_ui, 'value')
+# Call it once at startup to initialize the UI based on the default method
+update_forecast_options_ui(None) # Pass None or a dummy event for initial call
+
 
 def add_series_data(event: Any) -> None:
     """
     Callback triggered by the search button (`search_button`).
     Fetches series data from FRED based on `search_input` and `search_limit_input`,
-    then updates the Tabulator (`df_widget`) and Perspective (`indices`) panes.
+    using the currently selected forecasting options, then updates the
+    Tabulator (`df_widget`) and Perspective (`indices`) panes.
     The search input field is cleared after the search.
 
     Args:
         event (Any): The event object from the button click (not used directly).
     """
-    logger.info(
-        f"Searching for series: {search_input.value} with limit: {search_limit_input.value}")
-    if not search_input.value:
-        logger.warning("Search input is empty. Skipping search.")
-        pn.state.notifications.warning(
-            "Search term cannot be empty.", duration=3000)
-        return
-
+    template.loading = True
     try:
+        logger.info(
+            f"Searching for series: {search_input.value} with limit: {search_limit_input.value} "
+            f"and forecast: {forecast_method_select.value}"
+        )
+        if not search_input.value:
+            logger.warning("Search input is empty. Skipping search.")
+            pn.state.notifications.warning("Search term cannot be empty.", duration=3000)
+            return
+
+        # Gather current forecast options for make_index_from_search
+        current_forecast_options: Dict[str, Any] = {'method': forecast_method_select.value}
+        selected_method = forecast_method_select.value
+
+        if selected_method == 'arima':
+            if not (arima_p_input.value >= 0 and arima_d_input.value >= 0 and arima_q_input.value >= 0):
+                pn.state.notifications.error("ARIMA P, D, and Q orders must be non-negative.", duration=4000)
+                return
+            current_forecast_options['order'] = (arima_p_input.value, arima_d_input.value, arima_q_input.value)
+        elif selected_method == 'exponential_smoothing':
+            if es_seasonal_periods_input.value < 0:
+                pn.state.notifications.error("Exponential Smoothing seasonal periods must be non-negative.", duration=4000)
+                return
+            current_forecast_options['trend'] = es_trend_select.value
+            current_forecast_options['seasonal'] = es_seasonal_select.value
+            current_forecast_options['seasonal_periods'] = es_seasonal_periods_input.value if es_seasonal_periods_input.value > 0 else None
+        elif selected_method == 'chained':
+            if not chained_series_id_input.value:
+                pn.state.notifications.error("Chained Series ID must be provided for 'chained' forecast when adding series.", duration=4000)
+                return
+            current_forecast_options['series_id'] = chained_series_id_input.value
+            current_forecast_options['chain_type'] = 'rate' # Simplified in fred.py
+
+        # Call make_index_from_search with the gathered forecast_options
         new_series_df = esc.make_index_from_search(
-            search_input.value, limit=search_limit_input.value)
+            search_term=search_input.value, 
+            limit=search_limit_input.value,
+            forecast_options=current_forecast_options
+        )
         if new_series_df.empty:
             logger.info(f"No data found for search: {search_input.value}")
             pn.state.notifications.info(
@@ -182,73 +266,129 @@ def add_series_data(event: Any) -> None:
             f"Error during series search or streaming: {e}", exc_info=True)
         pn.state.notifications.error(
             f"Error adding series: {e}", duration=5000)
+    finally:
+        template.loading = False
 
 
 search_button.on_click(add_series_data)
 
 
-@pn.depends(series_ids=series_ids_widget, outlays_df=outlays_widget, base_year=base_year_widget)
-def update_main_indices(series_ids: List[str], outlays_df: pd.DataFrame, base_year: int) -> None:
+@pn.depends(
+    series_ids=series_ids_widget, 
+    outlays_df=outlays_widget, 
+    base_year=base_year_widget,
+    # Forecast widget dependencies:
+    forecast_method=forecast_method_select,
+    arima_p=arima_p_input,
+    arima_d=arima_d_input,
+    arima_q=arima_q_input,
+    es_trend=es_trend_select,
+    es_seasonal=es_seasonal_select,
+    es_seasonal_periods=es_seasonal_periods_input,
+    chained_series_id=chained_series_id_input,
+    watch=True # Ensure it reacts to changes in any of these
+)
+def update_main_indices(
+    series_ids: List[str], 
+    outlays_df: pd.DataFrame, 
+    base_year: int,
+    # Forecast widget values passed by decorator:
+    forecast_method: str,
+    arima_p: int, arima_d: int, arima_q: int,
+    es_trend: str, es_seasonal: Optional[str], es_seasonal_periods: Optional[int],
+    chained_series_id: str
+) -> None:
     """
-    Callback triggered by changes in `series_ids_widget`, `outlays_widget`, or `base_year_widget`.
-    Recalculates the economic index using `esc.make_index` and updates the
-    main Tabulator (`df_widget`) and Perspective (`indices`) panes.
+    Callback triggered by changes in various input widgets (series, outlays, base year, forecast options).
+    This function orchestrates the creation of forecast_options and calls `esc.make_index`.
+    the creation of forecast_options and calls `esc.make_index`.
 
     Args:
-        series_ids (List[str]): Selected series IDs from `series_ids_widget`.
-        outlays_df (pd.DataFrame): DataFrame from `outlays_widget.value`.
-        base_year (int): Selected base year from `base_year_widget.value`.
+        series_ids (List[str]): Selected series IDs.
+        outlays_df (pd.DataFrame): Outlay profile DataFrame.
+        base_year (int): Selected base year.
+        # Forecast related parameters are now read directly from their widgets inside the function
     """
-    logger.info(
-        f"Updating indices for series: {series_ids}, base_year: {base_year}")
+    logger.info(f"Updating indices for series: {series_ids}, base_year: {base_year}, forecast_method: {forecast_method}") # forecast_method from decorator
     logger.debug(f"Outlays DataFrame for update:\n{outlays_df}")
-
-    if not series_ids:
-        logger.warning("No series IDs selected. Cannot update index.")
-        # Optionally clear the widgets or show a message
-        # df_widget.object = pd.DataFrame()
-        # indices.object = pd.DataFrame()
-        return
-
-    # Extract outlay values. Assuming the first row of outlays_df contains the relevant profile.
-    # The structure from fred.py's make_index expects a tuple/list of floats.
-    # The outlays_df has columns like '0', '1', ... which are string representations.
+    
+    template.loading = True
     try:
-        # Ensure outlay_df has data and expected columns
+        if not series_ids:
+            logger.warning("No series IDs selected. Cannot update index.")
+            pn.state.notifications.warning("Please select at least one series ID.", duration=3000)
+            return
+
+        # Construct forecast_options dictionary using values passed by @pn.depends
+        current_forecast_options: Dict[str, Any] = {'method': forecast_method}
+        
+        if forecast_method == 'arima':
+            if not (arima_p >= 0 and arima_d >= 0 and arima_q >= 0):
+                pn.state.notifications.error("ARIMA P, D, and Q orders must be non-negative.", duration=4000)
+                return
+            current_forecast_options['order'] = (arima_p, arima_d, arima_q)
+        elif forecast_method == 'exponential_smoothing':
+            if es_seasonal_periods is not None and es_seasonal_periods < 0:
+                pn.state.notifications.error("Exponential Smoothing seasonal periods must be non-negative.", duration=4000)
+                return
+            current_forecast_options['trend'] = es_trend
+            current_forecast_options['seasonal'] = es_seasonal
+            current_forecast_options['seasonal_periods'] = es_seasonal_periods if es_seasonal_periods is not None and es_seasonal_periods > 0 else None
+        elif forecast_method == 'chained':
+            if not chained_series_id:
+                pn.state.notifications.error("Chained Series ID cannot be empty for 'chained' forecast method.", duration=4000)
+                return 
+            current_forecast_options['series_id'] = chained_series_id
+            current_forecast_options['chain_type'] = 'rate'
+
         if outlays_df.empty:
-            logger.error("Outlays DataFrame is empty. Cannot calculate index.")
-            pn.state.notifications.error(
-                "Outlay profile is missing.", duration=3000)
+            logger.error("Outlays DataFrame is empty.")
+            pn.state.notifications.error("Outlay profile is missing.", duration=3000)
             return
-
-        # Extract values from columns '0' through '9' (or as many as exist)
-        outlay_values_str_cols = [str(i) for i in range(
-            10) if str(i) in outlays_df.columns]
+            
+        outlay_values_str_cols = [str(i) for i in range(10) if str(i) in outlays_df.columns]
         if not outlay_values_str_cols:
-            logger.error(
-                "No valid outlay columns (e.g., '0', '1', ..) found in outlays_df.")
-            pn.state.notifications.error(
-                "Invalid outlay profile structure.", duration=3000)
+            logger.error("No valid outlay columns found in outlays_df.")
+            pn.state.notifications.error("Invalid outlay profile structure.", duration=3000)
             return
-
-        # Take the first row for outlay percentages
-        outlay_profile = tuple(
-            outlays_df.iloc[0][outlay_values_str_cols].astype(float))
+        
+        outlay_profile = tuple(outlays_df.iloc[0][outlay_values_str_cols].astype(float))
         logger.debug(f"Extracted outlay profile: {outlay_profile}")
 
+        # Call make_index with the constructed forecast_options
         updated_df = esc.make_index(
-            series_ids=series_ids, outlays=outlay_profile, base_year=base_year)
+            series_ids=series_ids, 
+            outlays=outlay_profile, 
+            base_year=base_year,
+            forecast_options=current_forecast_options # Pass the new options
+        )
+        
+        if updated_df.empty:
+            logger.warning(f"make_index returned an empty DataFrame for series: {series_ids} and options: {current_forecast_options}")
+            pn.state.notifications.info("No data returned for the selected index parameters.", duration=3000)
+            # df_widget.value = pd.DataFrame() # Clear table
+            # indices.object = pd.DataFrame() # Clear perspective
+            # return # Keep existing data or clear? For now, let's not clear.
 
         processed_updated_df = _rename_numeric_cols_to_str(updated_df)
 
         df_widget.object = processed_updated_df
-        # Perspective usually needs full object replacement
-        indices.object = processed_updated_df
-        logger.info("Successfully updated main index displays.")
+        indices.object = processed_updated_df # Perspective usually needs full object replacement
+        
+        # User notification about the method used
+        method_used_for_notification = processed_updated_df['forecast_method_used'].iloc[0] if not processed_updated_df.empty and 'forecast_method_used' in processed_updated_df.columns else current_forecast_options.get('method', 'N/A')
+        pn.state.notifications.success(
+            f"Indices updated using '{method_used_for_notification}' forecast method.",
+            duration=3000
+        )
+        logger.info(f"Successfully updated main index displays using {method_used_for_notification} forecast.")
+
     except Exception as e:
         logger.error(f"Error updating main indices: {e}", exc_info=True)
         pn.state.notifications.error(
             f"Error calculating index: {e}", duration=5000)
+    finally:
+        template.loading = False
 
 
 @pn.depends(data_for_graph=df_widget, fiscal_year_range=fys_slider)
@@ -325,35 +465,46 @@ def graph_dynamic_indices(data_for_graph: pd.DataFrame, fiscal_year_range: Tuple
 
 
 # --- Page Layout and Servable ---
-# Using more specific types for Panel components in the template definition
-sidebar_components: List[Card] = [ # More specific type for sidebar list
-    Card(
-        search_input,
-        search_limit_input,
-        search_button,
-        title="Search FRED Series"
-    )
-]
-
-main_layout = Column( # Explicitly define main_layout for clarity
-    Row(outlays_widget, base_year_widget),
-    series_ids_widget,
-    fys_slider,
-    Tabs(
-        ("Index Table", df_widget),
-        ("Index Perspective", indices)
-    ),
-    graph_dynamic_indices
+sidebar_search_card = Card(
+    search_input,
+    search_limit_input,
+    search_button,
+    title="Search & Add Series Data"
 )
+
+sidebar_index_config_card = Card(
+    series_ids_widget, # Moved here for better grouping
+    base_year_widget,
+    # outlays_widget, # Outlays might be better in main content or if it's a global setting
+    title="Core Index Parameters"
+)
+
+sidebar_forecast_card = Card(
+    forecast_method_select,
+    forecast_options_ui, # Dynamic options will appear here
+    title="Forecast Configuration"
+)
+
 
 template = FastListTemplate(
     title='FRED Economic Index Analysis Dashboard',
-    sidebar=sidebar_components,
-    main=[main_layout], # main takes a list of displayable objects
-    accent_base_color="#2c3e50",
-    header_background="#34495e",
-    theme=pn.theme.MaterialDarkTheme,
-    sidebar_width=350,
+    sidebar=[
+        sidebar_search_card,
+        sidebar_index_config_card,
+        sidebar_forecast_card
+    ],
+    main=[ # Main content layout
+        pn.Row(outlays_widget, fys_slider), # Outlays and FY slider for plots
+        Tabs(
+            ("Index Table", df_widget),
+            ("Index Perspective", indices)
+        ),
+        graph_dynamic_indices # Graph display
+    ],
+    accent_base_color="#2c3e50", 
+    header_background="#34495e", 
+    theme=pn.theme.MaterialDarkTheme, 
+    sidebar_width=380, # Slightly wider sidebar for new options
 )
 
 # Make the application servable

@@ -7,6 +7,7 @@ This tool allows users to analyze and visualize economic escalation indices usin
 Key features include:
 *   Search for economic series directly from the FRED database.
 *   Create custom-weighted economic indices based on selected series, outlay profiles, and base years.
+*   Utilize various forecasting methods to project future index values.
 *   Visualize raw data, calculated rates, and generated indices.
 *   Interactive dashboard for easy data exploration and manipulation.
 *   Tabular and pivot-table views of data using Panel's Tabulator and Perspective components.
@@ -70,6 +71,27 @@ This will start a local web server. The application logs will indicate the URL t
 
 Once started, open the provided URL in your web browser to interact with the Escalation Analysis Tool.
 
+### Custom Index Creation
+
+Users can create custom economic indices through the following steps:
+1.  **Search for FRED Series:** Use the search bar in the sidebar to find relevant economic series by name or FRED ID.
+2.  **Add Series to Analysis:** Searched series are added to the main data table. The indices displayed are calculated based on the series present in this table.
+3.  **Define Outlay Profile:** The "Outlay Profile (Yearly %)" table (typically shown in the main application area) allows users to define weights for different components or time periods that contribute to the index. *(Note: The current UI has this table disabled by default; enabling and configuring its interaction for weighted indices is a potential enhancement.)*
+4.  **Select Base Year:** Choose a base year for the index. This year will serve as the benchmark (e.g., index value = 100 or 1.0).
+
+### Forecasting Methods
+
+The tool supports several methods for forecasting future rates of the calculated indices:
+*   **Median:** Uses the median of historical rates for future projections.
+*   **Mean:** Uses the mean (average) of historical rates for future projections.
+*   **ARIMA (AutoRegressive Integrated Moving Average):** A statistical model for time series forecasting. Users can configure the (p,d,q) order of the model.
+*   **Exponential Smoothing:** Another statistical time series forecasting method. Users can configure trend and seasonal components, and seasonal periods.
+*   **Chained:** Uses the median rate of a specified secondary FRED series for forecasting the primary index. Users need to provide the FRED Series ID for the chained series.
+
+The desired forecasting method and its specific parameters (if applicable) can be selected from the "Forecast Configuration" section in the sidebar. The chosen method will be used to project future values when an index is calculated or updated.
+
+*(Note for maintainers: Consider adding screenshots of the UI to illustrate the selection of forecast methods and custom index creation.)*
+
 ## Dependencies
 
 All project dependencies are listed in the `requirements.txt` file. The main dependencies include:
@@ -77,6 +99,7 @@ All project dependencies are listed in the `requirements.txt` file. The main dep
 *   **pandas:** For data manipulation and analysis.
 *   **panel:** For creating the interactive web dashboard.
 *   **requests:** For making HTTP requests to the FRED API.
+*   **statsmodels:** For statistical modeling, including ARIMA and Exponential Smoothing.
 *   **plotly:** Used as the plotting backend for pandas and Panel to generate interactive visualizations.
 *   **hvplot:** While not directly called in all parts, it can be used with Panel and pandas for quick interactive plots (and `pd.options.plotting.backend='plotly'` can leverage parts of its ecosystem).
 
