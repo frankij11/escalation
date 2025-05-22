@@ -8,17 +8,21 @@ This application allows users to:
 - Visualize indices using interactive plots.
 """
 import logging
+import json
+import datetime
+from io import BytesIO
 # Added basic typing imports, will add more specific ones like pd.DataFrame later
-from typing import Any, List, Union, Tuple, Dict
+from typing import Any, List, Union, Tuple, Dict, Optional # Added Optional
 
 import pandas as pd
 import panel as pn
-from panel.widgets import Tabulator, MultiChoice, Select, TextInput, IntInput, Button, IntRangeSlider
+from panel.widgets import Tabulator, MultiChoice, Select, TextInput, IntInput, Button, IntRangeSlider, FileDownload, FileInput # Added FileDownload, FileInput
 from panel.pane import Perspective, Plotly, Markdown
-from panel.layout import Card, Row, Tabs, Column # Added Column
-from panel.template import FastListTemplate # Added FastListTemplate
+from panel.layout import Card, Row, Tabs, Column 
+from panel.template import FastListTemplate 
 # hvplot.pandas and plotly.express are not directly used.
 # The plotly backend for pandas plotting is enabled via pd.options.
+import param # For event type hint if needed
 
 from fred import Escalation
 
@@ -145,7 +149,7 @@ forecast_options_ui = Column(sizing_mode='stretch_width') # Used specific import
 
 # --- Callback Functions ---
 
-def update_forecast_options_ui(event: Any) -> None: # event type can be param.parameterized.Event if param is imported
+def update_forecast_options_ui(event: Any) -> None: 
     """
     Updates the visibility of forecast-specific input widgets based on the
     selected forecast method in `forecast_method_select`.
@@ -464,6 +468,463 @@ def graph_dynamic_indices(data_for_graph: pd.DataFrame, fiscal_year_range: Tuple
     return Row(*plots_to_render)
 
 
+# --- Save/Load Configuration Widgets ---
+index_name_input = TextInput(name="Index Configuration Name", placeholder="Enter a name for this configuration...")
+save_config_button = Button(name="Save Current Configuration", button_type="primary")
+file_download_config = FileDownload(
+    label="Download Configuration", 
+    embed=False, 
+    button_type="success", 
+    filename="index_config.json",
+    visible=False # Initially hidden
+)
+load_config_input = FileInput(accept='.json', multiple=False) # multiple=False to ensure single file
+
+# --- Save/Load Callbacks (Skeletons for now) ---
+def handle_save_config(event: Any) -> None:
+    """Gathers current UI settings, formats them as JSON, and prepares for download."""
+    template.loading = True
+    file_download_config.visible = False # Hide previous download link
+    try:
+        name = index_name_input.value
+        if not name:
+            name = f"Unnamed_Index_Config_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            index_name_input.value = name # Update UI with generated name
+            pn.state.notifications.warning("Configuration name was empty, a default name has been generated.", duration=3000)
+
+        # Gather forecast options
+        forecast_opts_data: Dict[str, Any] = {'method': forecast_method_select.value}
+        selected_method = forecast_method_select.value
+        if selected_method == 'arima':
+            if not (arima_p_input.value >= 0 and arima_d_input.value >= 0 and arima_q_input.value >= 0):
+                pn.state.notifications.error("ARIMA P, D, and Q orders must be non-negative to save.", duration=4000)
+                return
+            forecast_opts_data['order'] = (arima_p_input.value, arima_d_input.value, arima_q_input.value)
+        elif selected_method == 'exponential_smoothing':
+            if es_seasonal_periods_input.value < 0:
+                pn.state.notifications.error("Exponential Smoothing seasonal periods must be non-negative to save.", duration=4000)
+                return
+            forecast_opts_data['trend'] = es_trend_select.value
+            forecast_opts_data['seasonal'] = es_seasonal_select.value
+            forecast_opts_data['seasonal_periods'] = es_seasonal_periods_input.value if es_seasonal_periods_input.value > 0 else None
+        elif selected_method == 'chained':
+            if not chained_series_id_input.value:
+                pn.state.notifications.error("Chained Series ID must be provided for 'chained' forecast to save.", duration=4000)
+                return
+            forecast_opts_data['series_id'] = chained_series_id_input.value
+            forecast_opts_data['chain_type'] = 'rate' 
+
+        config_data = {
+            "indexName": name,
+            "description": "User saved index configuration", # Placeholder description
+            "version": "1.0",
+            "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "seriesComponents": [{'id': sid} for sid in series_ids_widget.value],
+            "outlays": outlays_widget.value.to_dict(orient='records') if isinstance(outlays_widget.value, pd.DataFrame) else [],
+            "baseYear": base_year_widget.value,
+            "forecastOptions": forecast_opts_data,
+            # Save other relevant UI states if needed, e.g., fys_slider.value
+            "fiscalYearRangeForPlot": fys_slider.value 
+        }
+
+        json_string = json.dumps(config_data, indent=2)
+        bytes_io = BytesIO(json_string.encode())
+        
+        file_download_config.file = bytes_io
+        file_download_config.filename = f"{name.replace(' ', '_').lower()}_config.json"
+        file_download_config.visible = True # Make download button visible
+        pn.state.notifications.success(f"Configuration '{name}' ready. Click the download button.", duration=4000)
+
+    except Exception as e:
+        logger.error(f"Error preparing configuration for saving: {e}", exc_info=True)
+        pn.state.notifications.error(f"Error saving configuration: {e}", duration=5000)
+    finally:
+        template.loading = False
+
+save_config_button.on_click(handle_save_config)
+
+def handle_load_config(event: param.parameterized.Event) -> None: 
+    """Loads a JSON configuration file and applies its settings to the UI."""
+    if not load_config_input.value:
+        return # No file selected or event triggered without a file
+
+    template.loading = True
+    try:
+        json_string = load_config_input.value.decode('utf-8')
+        loaded_config = json.loads(json_string)
+
+        # Apply configuration to UI elements
+        index_name_input.value = loaded_config.get("indexName", "Loaded Config")
+        
+        # Series IDs - this might trigger update_main_indices if it's watched correctly
+        # For robustness, ensure series_ids_widget.options includes these before setting value
+        loaded_series_ids = [s['id'] for s in loaded_config.get("seriesComponents", [])]
+        current_options = list(series_ids_widget.options)
+        for sid in loaded_series_ids:
+            if sid not in current_options:
+                current_options.append(sid) # Add if missing, ideally fetch title too
+        series_ids_widget.options = current_options
+        series_ids_widget.value = loaded_series_ids
+        
+        base_year_widget.value = loaded_config.get("baseYear", 2023)
+        
+        # Outlays
+        outlays_data = loaded_config.get("outlays", [])
+        if outlays_data: # Check if outlays_data is not empty
+            # Ensure columns match what Tabulator expects (['sum'] + str_numbers)
+            # The current outlays_widget is initialized with columns=['sum'] + [str(i) for i in range(10)]
+            # If loaded data has different keys, it needs transformation or Tabulator needs re-init.
+            # Assuming loaded_config['outlays'] is a list of dicts that can form a DataFrame.
+            try:
+                outlays_df = pd.DataFrame.from_records(outlays_data)
+                 # Ensure all expected columns are present, fill with 0 if missing from loaded config
+                for col in outlay_columns: # outlay_columns defined globally
+                    if col not in outlays_df.columns:
+                        outlays_df[col] = 0.0 
+                outlays_widget.value = outlays_df[outlay_columns] # Reorder and select to match expected
+            except Exception as e_outlays:
+                logger.error(f"Error processing loaded outlays data: {e_outlays}", exc_info=True)
+                pn.state.notifications.warning("Could not fully parse outlays from config. Check structure.", duration=4000)
+        else: # If no outlays in config, reset to default or keep current? For now, reset.
+            outlays_widget.value = pd.DataFrame(columns=outlay_columns, data=initial_outlay_data)
+
+
+        # Forecast Options
+        forecast_opts = loaded_config.get("forecastOptions", {})
+        forecast_method_select.value = forecast_opts.get("method", "median")
+        # update_forecast_options_ui will be triggered by the above change
+
+        # Now, update specific forecast widgets based on the method
+        # This needs to happen *after* update_forecast_options_ui has run,
+        # or ensure the widgets are visible before setting their values.
+        # A slight delay or pn.state.execute_later might be needed if direct assignment fails due to visibility.
+        # For now, direct assignment:
+        if forecast_opts.get("method") == 'arima':
+            arima_order = forecast_opts.get("order", (1, 1, 0))
+            if len(arima_order) == 3:
+                arima_p_input.value, arima_d_input.value, arima_q_input.value = arima_order
+        elif forecast_opts.get("method") == 'exponential_smoothing':
+            es_trend_select.value = forecast_opts.get("trend", "add")
+            es_seasonal_select.value = forecast_opts.get("seasonal") # Handles None correctly
+            es_seasonal_periods_input.value = forecast_opts.get("seasonal_periods", 0) # Default to 0 if None/missing
+        elif forecast_opts.get("method") == 'chained':
+            chained_series_id_input.value = forecast_opts.get("series_id", "")
+            
+        # Other UI elements
+        if "fiscalYearRangeForPlot" in loaded_config:
+            fys_slider.value = tuple(loaded_config["fiscalYearRangeForPlot"])
+
+        pn.state.notifications.success(f"Configuration '{loaded_config.get('indexName', 'N/A')}' loaded and applied.", duration=3000)
+        
+        # Explicitly trigger update_main_indices if not automatically done by all widget changes
+        # This is important if some widget changes didn't trigger it due to complex dependency watching
+        # or if we want a single consolidated update after all settings are applied.
+        # For now, relying on @pn.depends with watch=True. If issues, a manual trigger button or
+        # pn.state.execute_soon(update_main_indices_button.param.trigger('clicks')) could be used
+        # if update_main_indices was attached to a (hidden) button.
+
+    except Exception as e:
+        logger.error(f"Failed to load or parse configuration file: {e}", exc_info=True)
+        pn.state.notifications.error(f"Error loading configuration: {e}", duration=5000)
+    finally:
+        load_config_input.value = None # Reset FileInput to allow loading same file again
+        template.loading = False
+
+load_config_input.param.watch(handle_load_config, 'value')
+
+
+# --- Save/Load Configuration Widgets ---
+index_name_input = TextInput(name="Index Configuration Name", placeholder="Enter a name for this configuration...")
+save_config_button = Button(name="Save Current Configuration", button_type="primary")
+file_download_config = FileDownload(
+    label="Download Configuration", 
+    embed=False, 
+    button_type="success", 
+    filename="index_config.json",
+    visible=False 
+)
+load_config_input = FileInput(accept='.json', multiple=False) 
+
+# --- Export to Excel Widgets ---
+export_excel_button = Button(name="Export Current Index to Excel", button_type="primary")
+file_download_excel = FileDownload(
+    label="Download Excel Report",
+    embed=False,
+    button_type="success",
+    filename="index_report.xlsx", # Default filename
+    visible=False
+)
+
+# --- Testable Helper Functions for Config/Export ---
+
+def _build_config_data_dict(
+    index_name_val: str,
+    series_ids_val: List[str],
+    outlays_df_val: pd.DataFrame, # Changed from outlays_val to outlays_df_val for clarity
+    base_year_val: int,
+    forecast_method_val: str,
+    arima_p_val: int, arima_d_val: int, arima_q_val: int,
+    es_trend_val: Optional[str], es_seasonal_val: Optional[str], 
+    es_seasonal_periods_val: Optional[int],
+    chained_series_id_val: str,
+    fys_slider_val: Tuple[int, int]
+) -> Dict[str, Any]:
+    """Builds the configuration data dictionary from provided values."""
+    
+    forecast_opts_data: Dict[str, Any] = {'method': forecast_method_val}
+    if forecast_method_val == 'arima':
+        forecast_opts_data['order'] = (arima_p_val, arima_d_val, arima_q_val)
+    elif forecast_method_val == 'exponential_smoothing':
+        forecast_opts_data['trend'] = es_trend_val
+        forecast_opts_data['seasonal'] = es_seasonal_val
+        forecast_opts_data['seasonal_periods'] = es_seasonal_periods_val if es_seasonal_periods_val is not None and es_seasonal_periods_val > 0 else None
+    elif forecast_method_val == 'chained':
+        forecast_opts_data['series_id'] = chained_series_id_val
+        forecast_opts_data['chain_type'] = 'rate'
+
+    config_data = {
+        "indexName": index_name_val,
+        "description": "User saved index configuration",
+        "version": "1.0",
+        "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "seriesComponents": [{'id': sid} for sid in series_ids_val],
+        "outlays": outlays_df_val.to_dict(orient='records') if isinstance(outlays_df_val, pd.DataFrame) else [],
+        "baseYear": base_year_val,
+        "forecastOptions": forecast_opts_data,
+        "fiscalYearRangeForPlot": fys_slider_val
+    }
+    return config_data
+
+def _build_excel_metadata_dict(
+    export_timestamp_val: str,
+    index_name_val: str,
+    base_year_val: int,
+    fys_slider_val: Tuple[int, int],
+    active_series_ids_val: List[str],
+    main_data_df_for_meta: pd.DataFrame, # Used to extract titles
+    outlays_df_val: pd.DataFrame, # Changed from outlays_val to outlays_df_val
+    forecast_method_val: str,
+    arima_p_val: int, arima_d_val: int, arima_q_val: int,
+    es_trend_val: Optional[str], es_seasonal_val: Optional[str],
+    es_seasonal_periods_val: Optional[int],
+    chained_series_id_val: str
+) -> Dict[str, Any]:
+    """Builds the metadata dictionary for Excel export from provided values."""
+    
+    component_series_list = []
+    if not main_data_df_for_meta.empty and \
+       'series_id' in main_data_df_for_meta.columns and \
+       'title' in main_data_df_for_meta.columns:
+        unique_series_info = main_data_df_for_meta[
+            main_data_df_for_meta['series_id'].isin(active_series_ids_val)
+        ][['series_id', 'title']].drop_duplicates()
+        component_series_list = unique_series_info.apply(
+            lambda x: f"{x['title']} ({x['series_id']})", axis=1
+        ).tolist()
+    elif active_series_ids_val:
+        component_series_list = active_series_ids_val
+
+    metadata_dict = {
+        "Report Generated At": export_timestamp_val,
+        "Index Configuration Name": index_name_val if index_name_val else "N/A (Not Saved/Named)",
+        "Base Year": base_year_val,
+        "Displayed Fiscal Year Range": fys_slider_val,
+        "Component Series": ", ".join(component_series_list) if component_series_list else "N/A",
+        "Outlay Weights": outlays_df_val.to_dict(orient='records') if isinstance(outlays_df_val, pd.DataFrame) else "N/A",
+        "Forecast Method": forecast_method_val,
+    }
+
+    if forecast_method_val == 'arima':
+        metadata_dict["ARIMA Order (p,d,q)"] = (arima_p_val, arima_d_val, arima_q_val)
+    elif forecast_method_val == 'exponential_smoothing':
+        metadata_dict["Exponential Smoothing Trend"] = es_trend_val
+        metadata_dict["Exponential Smoothing Seasonal"] = es_seasonal_val
+        metadata_dict["Exponential Smoothing Seasonal Periods"] = es_seasonal_periods_val
+    elif forecast_method_val == 'chained':
+        metadata_dict["Chained Series ID"] = chained_series_id_val
+        
+    return metadata_dict
+
+
+# --- Save/Load Callbacks ---
+def handle_save_config(event: Any) -> None:
+    """Gathers current UI settings, formats them as JSON, and prepares for download."""
+    template.loading = True
+    file_download_config.visible = False 
+    try:
+        name_val = index_name_input.value
+        if not name_val:
+            name_val = f"Unnamed_Index_Config_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            index_name_input.value = name_val 
+            pn.state.notifications.warning("Configuration name was empty, a default name has been generated.", duration=3000)
+
+        # Validation for forecast parameters before calling helper
+        if forecast_method_select.value == 'arima':
+            if not (arima_p_input.value >= 0 and arima_d_input.value >= 0 and arima_q_input.value >= 0):
+                pn.state.notifications.error("ARIMA P, D, and Q orders must be non-negative to save.", duration=4000)
+                template.loading = False; return
+        elif forecast_method_select.value == 'exponential_smoothing':
+            if es_seasonal_periods_input.value < 0:
+                pn.state.notifications.error("Exponential Smoothing seasonal periods must be non-negative to save.", duration=4000)
+                template.loading = False; return
+        elif forecast_method_select.value == 'chained':
+            if not chained_series_id_input.value:
+                pn.state.notifications.error("Chained Series ID must be provided for 'chained' forecast to save.", duration=4000)
+                template.loading = False; return
+
+        config_data = _build_config_data_dict(
+            index_name_val=name_val,
+            series_ids_val=series_ids_widget.value,
+            outlays_df_val=outlays_widget.value, # Pass DataFrame directly
+            base_year_val=base_year_widget.value,
+            forecast_method_val=forecast_method_select.value,
+            arima_p_val=arima_p_input.value,
+            arima_d_val=arima_d_input.value,
+            arima_q_val=arima_q_input.value,
+            es_trend_val=es_trend_select.value,
+            es_seasonal_val=es_seasonal_select.value,
+            es_seasonal_periods_val=es_seasonal_periods_input.value,
+            chained_series_id_val=chained_series_id_input.value,
+            fys_slider_val=fys_slider.value
+        )
+        
+        json_string = json.dumps(config_data, indent=2)
+        bytes_io = BytesIO(json_string.encode())
+        
+        file_download_config.file = bytes_io
+        file_download_config.filename = f"{name_val.replace(' ', '_').lower()}_config.json"
+        file_download_config.visible = True 
+        pn.state.notifications.success(f"Configuration '{name_val}' ready. Click the download button.", duration=4000)
+
+    except Exception as e:
+        logger.error(f"Error preparing configuration for saving: {e}", exc_info=True)
+        pn.state.notifications.error(f"Error saving configuration: {e}", duration=5000)
+    finally:
+        template.loading = False
+
+save_config_button.on_click(handle_save_config)
+
+def handle_load_config(event: param.parameterized.Event) -> None: 
+    """Loads a JSON configuration file and applies its settings to the UI."""
+    if not load_config_input.value:
+        return 
+
+    template.loading = True
+    try:
+        json_string = load_config_input.value.decode('utf-8')
+        loaded_config = json.loads(json_string)
+
+        index_name_input.value = loaded_config.get("indexName", "Loaded Config")
+        
+        loaded_series_ids = [s['id'] for s in loaded_config.get("seriesComponents", [])]
+        current_options = list(series_ids_widget.options)
+        for sid in loaded_series_ids:
+            if sid not in current_options:
+                current_options.append(sid) 
+        series_ids_widget.options = current_options
+        series_ids_widget.value = loaded_series_ids
+        
+        base_year_widget.value = loaded_config.get("baseYear", 2023)
+        
+        outlays_data = loaded_config.get("outlays", [])
+        if outlays_data: 
+            try:
+                outlays_df = pd.DataFrame.from_records(outlays_data)
+                for col in outlay_columns: 
+                    if col not in outlays_df.columns:
+                        outlays_df[col] = 0.0 
+                outlays_widget.value = outlays_df[outlay_columns] 
+            except Exception as e_outlays:
+                logger.error(f"Error processing loaded outlays data: {e_outlays}", exc_info=True)
+                pn.state.notifications.warning("Could not fully parse outlays from config. Check structure.", duration=4000)
+        else: 
+            outlays_widget.value = pd.DataFrame(columns=outlay_columns, data=initial_outlay_data)
+
+        forecast_opts = loaded_config.get("forecastOptions", {})
+        forecast_method_select.value = forecast_opts.get("method", "median")
+        
+        if forecast_opts.get("method") == 'arima':
+            arima_order = forecast_opts.get("order", (1, 1, 0))
+            if len(arima_order) == 3:
+                arima_p_input.value, arima_d_input.value, arima_q_input.value = arima_order
+        elif forecast_opts.get("method") == 'exponential_smoothing':
+            es_trend_select.value = forecast_opts.get("trend", "add")
+            es_seasonal_select.value = forecast_opts.get("seasonal") 
+            es_seasonal_periods_input.value = forecast_opts.get("seasonal_periods", 0) 
+        elif forecast_opts.get("method") == 'chained':
+            chained_series_id_input.value = forecast_opts.get("series_id", "")
+            
+        if "fiscalYearRangeForPlot" in loaded_config:
+            fys_slider.value = tuple(loaded_config["fiscalYearRangeForPlot"])
+
+        pn.state.notifications.success(f"Configuration '{loaded_config.get('indexName', 'N/A')}' loaded and applied.", duration=3000)
+        
+    except Exception as e:
+        logger.error(f"Failed to load or parse configuration file: {e}", exc_info=True)
+        pn.state.notifications.error(f"Error loading configuration: {e}", duration=5000)
+    finally:
+        load_config_input.value = None 
+        template.loading = False
+
+load_config_input.param.watch(handle_load_config, 'value')
+
+# --- Export to Excel Callback ---
+def handle_export_excel(event: Any) -> None:
+    """Gathers current index data and metadata, then exports to an Excel file."""
+    template.loading = True
+    file_download_excel.visible = False 
+    try:
+        main_data_df = df_widget.value.copy() 
+        if main_data_df.empty:
+            pn.state.notifications.warning("No data in the main table to export.", duration=3000)
+            template.loading = False; return # Added return after setting loading to false
+
+        export_timestamp_val = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        metadata_dict = _build_excel_metadata_dict(
+            export_timestamp_val=export_timestamp_val,
+            index_name_val=index_name_input.value,
+            base_year_val=base_year_widget.value,
+            fys_slider_val=fys_slider.value,
+            active_series_ids_val=series_ids_widget.value,
+            main_data_df_for_meta=main_data_df, # Pass the actual data for title extraction
+            outlays_df_val=outlays_widget.value, # Pass DataFrame directly
+            forecast_method_val=forecast_method_select.value,
+            arima_p_val=arima_p_input.value,
+            arima_d_val=arima_d_input.value,
+            arima_q_val=arima_q_input.value,
+            es_trend_val=es_trend_select.value,
+            es_seasonal_val=es_seasonal_select.value,
+            es_seasonal_periods_val=es_seasonal_periods_input.value,
+            chained_series_id_val=chained_series_id_input.value
+        )
+        
+        metadata_df = pd.DataFrame(list(metadata_dict.items()), columns=['Parameter', 'Value'])
+
+        excel_buffer = BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            main_data_df.to_excel(writer, sheet_name='Index_Data', index=False)
+            metadata_df.to_excel(writer, sheet_name='Metadata', index=False)
+        excel_buffer.seek(0) # Rewind the buffer
+
+        # Prepare for Download
+        file_download_excel.file = excel_buffer
+        export_filename = "index_report.xlsx"
+        if index_name_input.value:
+            export_filename = f"{index_name_input.value.replace(' ', '_').lower()}_report.xlsx"
+        file_download_excel.filename = export_filename
+        file_download_excel.visible = True
+        pn.state.notifications.success("Excel report generated. Click the download button.", duration=4000)
+
+    except Exception as e:
+        logger.error(f"Failed to generate Excel report: {e}", exc_info=True)
+        pn.state.notifications.error(f"Error generating Excel report: {e}", duration=5000)
+    finally:
+        template.loading = False
+
+export_excel_button.on_click(handle_export_excel)
+
+
 # --- Page Layout and Servable ---
 sidebar_search_card = Card(
     search_input,
@@ -473,16 +934,31 @@ sidebar_search_card = Card(
 )
 
 sidebar_index_config_card = Card(
-    series_ids_widget, # Moved here for better grouping
+    series_ids_widget, 
     base_year_widget,
-    # outlays_widget, # Outlays might be better in main content or if it's a global setting
     title="Core Index Parameters"
 )
 
 sidebar_forecast_card = Card(
     forecast_method_select,
-    forecast_options_ui, # Dynamic options will appear here
+    forecast_options_ui, 
     title="Forecast Configuration"
+)
+
+sidebar_manage_config_card = Card(
+    index_name_input,
+    save_config_button,
+    file_download_config, 
+    pn.Spacer(height=10),
+    Markdown("---"), 
+    load_config_input,  
+    title="Manage Index Configurations"
+)
+
+sidebar_export_card = Card( # New card for export
+    export_excel_button,
+    file_download_excel,
+    title="Export Index Data"
 )
 
 
@@ -491,10 +967,12 @@ template = FastListTemplate(
     sidebar=[
         sidebar_search_card,
         sidebar_index_config_card,
-        sidebar_forecast_card
+        sidebar_forecast_card,
+        sidebar_manage_config_card,
+        sidebar_export_card # Added new export card
     ],
-    main=[ # Main content layout
-        pn.Row(outlays_widget, fys_slider), # Outlays and FY slider for plots
+    main=[ 
+        pn.Row(outlays_widget, fys_slider), 
         Tabs(
             ("Index Table", df_widget),
             ("Index Perspective", indices)

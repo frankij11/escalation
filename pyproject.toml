@@ -16,6 +16,7 @@ urllib3 = "*" # Typically a sub-dependency of requests, but can be explicit
 plotly = "*"
 hvplot = "*"
 statsmodels = "*"
+openpyxl = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
