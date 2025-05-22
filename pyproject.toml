@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "escalation-tool"
+version = "0.1.0"
+description = "FRED data escalation analysis and visualization tool."
+authors = ["Automated Agent <agent@example.com>"]
+readme = "README.md"
+license = "MIT"
+# packages = [{include = "escalation_tool"}] # Code is currently in root
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pandas = "*"
+panel = "*"
+requests = "*"
+urllib3 = "*" # Typically a sub-dependency of requests, but can be explicit
+plotly = "*"
+hvplot = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+autopep8 = "*"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
